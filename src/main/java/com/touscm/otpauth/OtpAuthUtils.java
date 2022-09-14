@@ -13,6 +13,8 @@ import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * HOTP: An HMAC-Based One-Time Password Algorithm, specified in <a href="https://www.rfc-editor.org/rfc/rfc4226">RFC4226</a>
@@ -25,12 +27,16 @@ public class OtpAuthUtils {
     public static final String HASH_ALGORITHM = "HmacSHA1";
     public static final long TIME_STEP_SIZE = 30000;
     public static final int KEY_MODULUS = 1000000;
+    public static final int MAX_SIZE_CACHE_KEY = 500;
 
     public static final String OTP_AUTH_URL = "otpauth://totp/%s?secret=%s";
     public static final String QR_SERVER_URL = "https://api.qrserver.com/v1/create-qr-code/?data=%s&size=200x200&ecc=M&margin=0";
 
     private static final Base32 codec;
     private static final SecureRandom random;
+
+    private static int maxSize = MAX_SIZE_CACHE_KEY;
+    private static final Map<String, Long> validatedKeyMap = new HashMap<>();
 
     static {
         codec = new Base32();
@@ -105,13 +111,25 @@ public class OtpAuthUtils {
     /* ...... */
 
     /**
+     * 设置清理缓存密钥阈值
+     * @param size 阈值
+     */
+    public static void setMaxCacheKeySize(int size) {
+        if (MAX_SIZE_CACHE_KEY < size) {
+            maxSize = size;
+        }
+    }
+
+    /* ...... */
+
+    /**
      * 验证验证码
      *
      * @param secret 密钥
      * @param code   验证码
      * @return 验证结果
      */
-    public static boolean validateCode(@NotBlank String secret, long code) {
+    public static ValidateResult validateCode(@NotBlank String secret, long code) {
         return validateCode(secret, code, new Date().getTime());
     }
 
@@ -123,24 +141,30 @@ public class OtpAuthUtils {
      * @param timestamp 时间戳
      * @return 验证结果
      */
-    public static boolean validateCode(@NotBlank String secret, long code, long timestamp) {
-        if (secret == null || secret.length() == 0) throw new IllegalArgumentException("secret is empty");
-        if (code <= 0 || code >= KEY_MODULUS) return false;
+    public static ValidateResult validateCode(@NotBlank String secret, long code, long timestamp) {
+        if (secret == null || secret.length() == 0 || code <= 0 || code >= KEY_MODULUS) return ValidateResult.Failed;
 
         byte[] decodedKey = codec.decode(secret);
         long timeWindow = timestamp / TIME_STEP_SIZE;
 
-        return code == calculateCode(decodedKey, timeWindow);
+        if (code != calculateCode(decodedKey, timeWindow)) {
+            return ValidateResult.Failed;
+        }
+
+        if (!checkCacheKey(secret, timeWindow)) {
+            return ValidateResult.Duplicate;
+        }
+        return ValidateResult.Success;
     }
 
     /* ...... */
 
     /**
-     * Calculates the verification code of the provided key at the specified instant of time using the algorithm specified in <a href="https://www.rfc-editor.org/rfc/rfc4226">RFC6238</a>.
+     * 计算给定密钥, 给定时间的HOTP密码, 参照<a href="https://www.rfc-editor.org/rfc/rfc4226">RFC6238</a>
      *
-     * @param keyData    the secret key in binary format.
-     * @param timeWindow the instant of time.
-     * @return the validation code for the provided key at the specified instant of time.
+     * @param keyData    密钥
+     * @param timeWindow 时间标识
+     * @return 一次性密码
      */
     private static int calculateCode(byte[] keyData, long timeWindow) {
         byte[] data = new byte[8];
@@ -173,5 +197,30 @@ public class OtpAuthUtils {
         int binCode = (hmacResult[offset] & 0x7f) << 24 | (hmacResult[offset + 1] & 0xff) << 16 | (hmacResult[offset + 2] & 0xff) << 8 | (hmacResult[offset + 3] & 0xff);
 
         return binCode % KEY_MODULUS;
+    }
+
+    /**
+     * 检查OPT密码是否使用过
+     *
+     * @param secret     密钥
+     * @param timeWindow 时间标识
+     * @return 检查结果
+     */
+    private static boolean checkCacheKey(String secret, long timeWindow) {
+        if (maxSize <= validatedKeyMap.size()) {
+            validatedKeyMap.keySet().forEach(key -> {
+                if (timeWindow != validatedKeyMap.get(key)) {
+                    validatedKeyMap.remove(key);
+                }
+            });
+        }
+
+        Long cachedCode;
+        if ((cachedCode = validatedKeyMap.get(secret)) != null && cachedCode == timeWindow) {
+            return false;
+        }
+
+        validatedKeyMap.put(secret, timeWindow);
+        return true;
     }
 }

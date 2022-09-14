@@ -7,8 +7,10 @@
     <artifactId>otpauth</artifactId>
     <version>0.0.1</version>
     <packaging>jar</packaging>
+
     <name>otpauth</name>
     <description>OTP auth utils</description>
+    <url>https://github.com/touscm/otpauth</url>
 
     <licenses>
         <license>
